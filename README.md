@@ -9,3 +9,23 @@ As mentioned on Flatland's competition page
 ``` The problems are formulated as a 2D grid environment with restricted transitions between neighboring cells to represent railway networks. On the 2D grid, multiple agents with different objectives must collaborate to maximize global reward. There is a range of tasks with increasing difficulty that need to be solved as explained in the coming sections.```
 
 ![flatland](ReadmeAndNotebookImages/flatland.gif)
+
+# Getting Started
+
+The flatland environment is extremenly simple to install. However, it requires ```python 3.6``` or higher. One can follow the following easy steps (also listed [here](https://flatland.aicrowd.com/intro.html#quick-start)) to get up and running
+
+1) Create a new virtual environment with python 3.6 for flatland 
+  
+   ```conda create python=3.6 --name flatland-rl```
+
+2) Activate the environment
+
+   ```conda activate flatland-rl```
+
+3) Install the flatland-rl library
+
+   ```pip install flatland-rl```
+
+4) Test the installation:
+
+   ```flatland-demo```
