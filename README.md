@@ -7,3 +7,5 @@ Flatland provides a simplistic grid world environment that simulates the dynamic
 As mentioned on Flatland's competition page 
 
 ``` The problems are formulated as a 2D grid environment with restricted transitions between neighboring cells to represent railway networks. On the 2D grid, multiple agents with different objectives must collaborate to maximize global reward. There is a range of tasks with increasing difficulty that need to be solved as explained in the coming sections.```
+
+![flatland](ReadmeAndNotebookImages/flatland.gif)
