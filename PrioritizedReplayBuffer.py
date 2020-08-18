@@ -75,6 +75,9 @@ class PrioritizedReplay():
         # length of an array containg a single memory of any one player
         self.experience_length = 2*n_states+n_actions+roll_out+1 
         
+        # num of memories added to the buffer thus far
+        self.memory_ctr = 0
+        
         # index the in memory where the next experience is to be added
         # runs from 0 to buffer_size-1 after which it resets to zero
         self.new_exp_idx = 0
@@ -83,11 +86,11 @@ class PrioritizedReplay():
         self.priority_tree = sum_tree(buffer_size)
         self.first_leaf_idx = 2**(self.priority_tree.num_levels-1)-1 # index of the first leaf in priority_tree.tree_array 
         
-    def add(self, experience_tuple):
+    def add(self, experience_list):
         # add a new experience to the memory
-        # each tuple consists of (n-1)-steps of state, action, reward, done and the n-state
+        # the list consists of (n-1)-tuples of state, action, reward, done and the n-state
         # here n is the roll_out length
-        self.memory[self.new_exp_idx] = experience_tuple
+        self.memory[self.new_exp_idx] = experience_list
         
         # get the maximal priority of all experiences in the buffer
         priority = max([*self.priority_tree.tree_array[self.first_leaf_idx:], self.epsilon])
@@ -98,6 +101,8 @@ class PrioritizedReplay():
         
         # move the new experience index to the next position
         self.new_exp_idx = (self.new_exp_idx+1)%self.buffer_size
+        # update the memory counter
+        self.memory_ctr = min(self.memory_ctr+1, self.buffer_size)
     
     def update_priority(self, TDErrors, experience_idxs):
         # *********** To Implement **************
@@ -118,25 +123,18 @@ class PrioritizedReplay():
         sample_priorities = (priority_sum)*np.random.random(batch_size)
         
         
-        batch_idxs = np.array(list(map(lambda val: 
-                                      self.priority_tree.get_sample_id(val) - self.first_leaf_idx, sample_priorities)))
+        #batch_idxs = np.array(list(map(lambda val: 
+        #                              self.priority_tree.get_sample_id(val) - self.first_leaf_idx, sample_priorities)))
+        batch_idxs = list(map(lambda val: self.priority_tree.get_sample_id(val) - self.first_leaf_idx, sample_priorities))
         
         batch = np.stack(list(itemgetter(*batch_idxs)(self.memory)))
-        print(batch)
-        expected_batch_shape = (batch_size, self.n_agents, self.experience_length)
         
-        assert batch.shape == expected_batch_shape, 'Shape of the batch is not same as expected. Got: {}, expected: {}!'.format(batch.shape, expected_batch_shape)
+        priorities = np.array(list(map(lambda batch_id: 
+                                      self.priority_tree.get_value(batch_id + self.first_leaf_idx) , batch_idxs)))
         
-        states0_batch = batch[:,:,:self.n_states] # shape = (batch_size, n_agents, n_states)
-        actions0_batch = batch[:,:, self.n_states: self.n_states+self.n_actions].reshape(batch_size, -1)
-        # shape = (batch_size, n_agents*n_actions)
-        assert actions0_batch.shape == (batch_size, self.n_agents*self.n_actions),  'actions0 shape is incorrect'
+        return  batch, batch_idxs, priorities  
         
-        rewards_batch = batch[:,:,self.n_states+self.n_actions:self.n_states+self.n_actions+self.roll_out] 
-        # shape = (batch_size, n_agents, roll_out)
         
-        dones = batch[:,0,self.n_states+self.n_actions+self.roll_out:self.n_states+self.n_actions+self.roll_out+1]
-        # shape = (batch_size, 1)
-        states_fin_batch = batch[:,:,self.n_states+self.n_actions+self.roll_out+1:] # shape = (batch_size, n_agents, n_states)
         
-        return  states0_batch, actions0_batch, rewards_batch, dones, states_fin_batch, batch_idxs        
+    def __len__(self):
+        return self.memory_ctr
