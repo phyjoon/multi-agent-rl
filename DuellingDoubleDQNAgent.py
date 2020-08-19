@@ -67,6 +67,9 @@ class DuellingDoubleDQNAgent():
         self.gamma = gamma # we want the train to find the shortest possible path to its destination
                            # for every time step it gets a reward of -1
                            # it makes sense to keep gamma = 1 
+        # discounts to be applied at each step of roll_out
+        self.discounts = torch.tensor([self.gamma**powr 
+                                       for powr in range(self.roll_out)]).double().view(-1,1).to(device)   
         self.update_every = update_interval        
                 
         self.local_net = [DuellingDQN(obs_in_channels, conv_dim, kernel_size, n_actions) for _ in range(num_agents)]
@@ -129,8 +132,10 @@ class DuellingDoubleDQNAgent():
         # new memories is a list of n tuples
         # here n = roll_out
         # each tuple corresponds to a step in the roll_out
-        # each tuples contains: state, actions_dict, all_rewards, next_state, done
+        # each tuples contains: state, actions, all_rewards, next_state, done
         # here state and next_state are given by an image of the entire network
+        # actions is the list of each agent's action in that step
+        # thus actions[0] is the action of the 0-th agent in that step
         self.memory.add(new_memories)
         
         # update the networks after every self.update_every steps
@@ -143,6 +148,52 @@ class DuellingDoubleDQNAgent():
     
     
     def learn(self):
-        print("learning")
-        pass
+        # sample a batch of memories from the replay buffer
+        batch, batch_idxs, priorities = self.memory.sample(self.replay_batch_size)
+        # for a roll_out of n-steps, the batch has shape: (self.replay_batch_size, roll_out, 5)
+        # The last dimension corresponds to shape of the tuple (state, action, all_rewards, next_state, done) for each step
+        
+        in_states = np.stack(batch[:,0,0])
+        expected_in_shape = (self.replay_batch_size, self.in_channels, self.im_height, self.im_width)
+        assert in_states.shape == expected_in_shape ,        "Error: shape of in_states is not same as expected. Expected shape: {}, got {}".format(expected_in_shape, in_states.shape)
+        in_states = torch.from_numpy(in_states)..float().to(device)
+        
+        actions0 = np.stack(batch[:,0,1])
+        expected_actions_shape = (self.replay_batch_size, self.num_agents)
+        assert actions0.shape == expected_actions_shape,         "Error: shape of actions0 not same as expected. Expected shape: {}, got {}".format(expected_actions_shape, actions0.shape)
+        actions0 = torch.from_numpy(actions0).float().to(device)
+        
+        rewards = np.array(batch[:,:,2].tolist()) # rewards for all the steps in the roll_out for all the agents
+        expected_rewards_shape = (self.replay_batch_size, self.roll_out, self.num_agents)
+        assert rewards.shape == expected_rewards_shape,         "Error: shape of rewards not same as expected. Expected shape: {}, got {}".format(expected_rewards_shape, rewards.shape)
+        rewards = torch.from_numpy(rewards).float().to(device)
+        
+        fin_states = np.stack(batch[:,-1,3])
+        expected_fin_shape = (self.replay_batch_size, self.in_channels, self.im_height, self.im_width)
+        assert in_states.shape == expected_in_shape ,        "Error: shape of in_states is not same as expected. Expected shape: {}, got {}".format(expected_in_shape, in_states.shape)
+        fin_states = torch.from_numpy(fin_states).float().to(device)
+        
+        
+        dones = np.stack(batch[:,:,4].tolist())
+        expected_dones_shape = (self.replay_batch_size, self.roll_out, self.num_agents)
+        assert dones.shape == expected_dones_shape,         "Error: shape of dones not same as expected. Expected shape: {}, got {}".format(expected_dones_shape, dones.shape)
+        dones = torch.from_numpy(dones).float().to(device)
+        
+        # compute the accumalated discounted reward over the roll_out period
+        discounted_rewards = torch.matmul(self.discounts, rewards)
+        expected_discounted_rew_shape = (self.replay_batch_size, self.num_agents)
+        assert discounted_rewards.shape == expected_discounted_rew_shape,         "Error: shape of discounted_rewards not same as expected. Expected shape: {}, got {}".format(expected_discounted_rew_shape, tuple(discounted_rewards.shape))
+        
+        # collect the target q_values of all the agents in the final state
+        # This will correspond to the action with the max q_value
+        targetQ = []
+        with torch.no_grad():
+            for idx in range(self.num_agents):
+                self.target_net[idx].eval()
+                targetQ.append(torch.max(self.target_net[idx](fin_states).detach(), axis = 1).values.view(-1,1))
+                self.target_net[idx].train()    
+            
+        
+        
+        return in_states, actions0, rewards, fin_states, dones, batch_idxs, priorities
 
