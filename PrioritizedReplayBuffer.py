@@ -129,8 +129,16 @@ class PrioritizedReplay():
         
         batch = np.stack(list(itemgetter(*batch_idxs)(self.memory)))
         
-        priorities = np.array(list(map(lambda batch_id: 
-                                      self.priority_tree.get_value(batch_id + self.first_leaf_idx) , batch_idxs)))
+        
+        
+        # We can use np.fromiter to convert a map object to numpy array directly without first converting them to lists
+        # https://stackoverflow.com/questions/28524378/convert-map-object-to-numpy-array-in-python-3
+        priorities = np.fromiter(map(lambda batch_id: 
+                                      self.priority_tree.get_value(batch_id + self.first_leaf_idx) , batch_idxs), 
+                                 dtype = float, count = batch_size)
+        # Earlier I was first converting them to lists and then to numpy arrays which is obviously less efficient
+        #priorities = np.array(list(map(lambda batch_id: 
+        #                              self.priority_tree.get_value(batch_id + self.first_leaf_idx) , batch_idxs)))
         
         return  batch, batch_idxs, priorities  
         
