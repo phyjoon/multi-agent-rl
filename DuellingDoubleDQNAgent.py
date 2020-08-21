@@ -43,11 +43,14 @@ class DuellingDoubleDQNAgent():
     tau: parameter for soft update of the target network
     gamma: discount factor for discouted rewards
     update_interval: interval after which to update the network with new parameters
+    alpha: TDerror's exponent when computing priorities of saved memories
+    beta0: Initial value of the exponent for computing importance sampling weights
     """
     
     def __init__(self, device = device, num_agents=1, im_height = 464, im_width = 464, obs_in_channels=4, conv_dim = 32,  
                  kernel_size = 6, n_actions = 5, buffer_size = 2**20, roll_out = 5, replay_batch_size = 32,
-                 lr = 1e-4, epsilon = 0.3, epsilon_decay_rate = 0.999, tau = 1e-3, gamma = 1, update_interval = 4):
+                 lr = 1e-4, epsilon = 0.3, epsilon_decay_rate = 0.999, tau = 1e-3, gamma = 1, update_interval = 4, 
+                 alpha = 0.6, beta0 = 0.4):
         super().__init__()
         self.device = device
         self.num_agents = num_agents
@@ -67,33 +70,43 @@ class DuellingDoubleDQNAgent():
         self.gamma = gamma # we want the train to find the shortest possible path to its destination
                            # for every time step it gets a reward of -1
                            # it makes sense to keep gamma = 1 
+        self.alpha = alpha
+        self.beta0 = beta0
         # discounts to be applied at each step of roll_out
         self.discounts = torch.tensor([self.gamma**powr 
-                                       for powr in range(self.roll_out)]).double().view(-1,1).to(device)   
+                                       for powr in range(self.roll_out)]).float().to(device)   
         self.update_every = update_interval        
                 
-        self.local_net = [DuellingDQN(obs_in_channels, conv_dim, kernel_size, n_actions) for _ in range(num_agents)]
+        self.local_net = []
         self.target_net = []
         self.optimizer = []
         
         for agent in range(num_agents):
-            local = self.local_net[agent]
+            local = DuellingDQN(obs_in_channels, conv_dim, kernel_size, n_actions)
             target = DuellingDQN(obs_in_channels, conv_dim, kernel_size, n_actions)
             
             # copy the local networks parameters to the target network
             for local_param, target_param in zip(local.parameters(), target.parameters()):
                 target_param.data.copy_(local_param.data)
             
+            local = local.to(device)
+            self.local_net.append(local)
+            
+            target = target.to(device)
             self.target_net.append(target)
             
-            local = local.to(device)
-            target = target.to(device)
-            
             # set the optimizer for the local network
-            optim = torch.optim.Adam(local.parameters(), lr = lr)
+            optim = torch.optim.Adam(self.local_net[-1].parameters(), lr = lr)
+            self.optimizer.append(optim)
         
         # loss function to compare the Q-value of the local and the target network
-        self.criterion = nn.MSELoss()
+        # The total loss has to be a weighted sum of the instance losses
+        # The weights are obtained throught "importance sampling"
+        # Thus it is better to keep reduction to be 'none' instead of the default value which
+        # will return the average of all instance losses
+        self.criterion = nn.MSELoss(reduction = 'none')
+        # We will also be computing TDerrors for updating priorities
+        self.TDErrors = nn.L1Loss(reduction = 'none')
         
         # steps counter to keep track of steps passed between updates
         self.t_step = 0
@@ -101,13 +114,19 @@ class DuellingDoubleDQNAgent():
         # need to fix this to store images as memories. 
         # for the time being using a dummy value for n_states
         n_states = 264
-        self.memory = PrioritizedReplay(buffer_size, n_states, n_actions, roll_out, num_agents)
+        self.memory = PrioritizedReplay(buffer_size, n_states, n_actions, roll_out, num_agents, alpha)
+        
+        print("Created {} local networks".format(len(self.local_net)))
+        print("Created {} target networks".format(len(self.target_net)))
+        print("Created {} optimizers".format(len(self.optimizer)))
         
     def act(self, state):
         # function to produce an action from the DQN
         # convert states to a torch tensor and move to the device
         # unsqueeze at index 1 to convert the state for each agent into a batch of size 1
         state = torch.from_numpy(state).unsqueeze(0).float().to(device)
+        expected_state_shape = (1, self.in_channels, self.im_height, self.im_width)
+        assert state.shape == expected_state_shape,        "Error: state's shape not same as expected. Expected shape {}, got {}".format(expected_state_shape, tuple(state.shape))
         actions_list = []
         with torch.no_grad():
             for idx in range(self.num_agents):
@@ -119,7 +138,7 @@ class DuellingDoubleDQNAgent():
                 if random_num > self.epsilon:
                     action = np.argmax(actionQ)
                 else:
-                    action = np.random.randint(self.n_actions+1)
+                    action = np.random.randint(self.n_actions)
                     
                 actions_list.append(action)
                 self.local_net[idx].train()
@@ -144,6 +163,7 @@ class DuellingDoubleDQNAgent():
         if self.t_step == 0 and self.memory.__len__() > 2*self.replay_batch_size:
             self.learn()
             self.epsilon = max(self.epsilon_decay_rate*self.epsilon, 0.1 )
+            self.beta0 = min(self.beta0/self.epsilon_decay_rate, 1)
         
     
     
@@ -156,12 +176,12 @@ class DuellingDoubleDQNAgent():
         in_states = np.stack(batch[:,0,0])
         expected_in_shape = (self.replay_batch_size, self.in_channels, self.im_height, self.im_width)
         assert in_states.shape == expected_in_shape ,        "Error: shape of in_states is not same as expected. Expected shape: {}, got {}".format(expected_in_shape, in_states.shape)
-        in_states = torch.from_numpy(in_states)..float().to(device)
+        in_states = torch.from_numpy(in_states).float().to(device)
         
         actions0 = np.stack(batch[:,0,1])
         expected_actions_shape = (self.replay_batch_size, self.num_agents)
         assert actions0.shape == expected_actions_shape,         "Error: shape of actions0 not same as expected. Expected shape: {}, got {}".format(expected_actions_shape, actions0.shape)
-        actions0 = torch.from_numpy(actions0).float().to(device)
+        actions0 = torch.from_numpy(actions0).to(device)
         
         rewards = np.array(batch[:,:,2].tolist()) # rewards for all the steps in the roll_out for all the agents
         expected_rewards_shape = (self.replay_batch_size, self.roll_out, self.num_agents)
@@ -174,8 +194,10 @@ class DuellingDoubleDQNAgent():
         fin_states = torch.from_numpy(fin_states).float().to(device)
         
         
-        dones = np.stack(batch[:,:,4].tolist())
-        expected_dones_shape = (self.replay_batch_size, self.roll_out, self.num_agents)
+        #dones = np.stack(batch[:,:,4].tolist())
+        #expected_dones_shape = (self.replay_batch_size, self.roll_out, self.num_agents)
+        dones = np.stack(batch[:,-1,4].tolist()) # each agent's done for the last step of the roll_out
+        expected_dones_shape = (self.replay_batch_size, self.num_agents)
         assert dones.shape == expected_dones_shape,         "Error: shape of dones not same as expected. Expected shape: {}, got {}".format(expected_dones_shape, dones.shape)
         dones = torch.from_numpy(dones).float().to(device)
         
@@ -184,16 +206,64 @@ class DuellingDoubleDQNAgent():
         expected_discounted_rew_shape = (self.replay_batch_size, self.num_agents)
         assert discounted_rewards.shape == expected_discounted_rew_shape,         "Error: shape of discounted_rewards not same as expected. Expected shape: {}, got {}".format(expected_discounted_rew_shape, tuple(discounted_rewards.shape))
         
-        # collect the target q_values of all the agents in the final state
-        # This will correspond to the action with the max q_value
-        targetQ = []
-        with torch.no_grad():
-            for idx in range(self.num_agents):
+        
+        for idx in range(self.num_agents):
+            with torch.no_grad():
+                # need to choose nextQ using the local network's q-values
+                self.local_net[idx].eval()
+                nextActions = torch.max(self.local_net[idx](fin_states).detach(), axis = 1).indices.view(-1,1)
+                self.local_net[idx].train()
                 self.target_net[idx].eval()
-                targetQ.append(torch.max(self.target_net[idx](fin_states).detach(), axis = 1).values.view(-1,1))
-                self.target_net[idx].train()    
+                nextQ = self.target_net[idx](fin_states).detach().gather(1, nextActions)
+                self.target_net[idx].train() 
+                nextQ*=(1-dones[:, idx].view(-1,1))
+                targetQ = discounted_rewards[:,idx].view(-1,1) + (self.gamma**self.roll_out)*nextQ
+            
+            
+            # local agent's Q-value
+            agent_actions = actions0[:, idx].view(-1,1)
+            localQ = self.local_net[idx](in_states).gather(1, agent_actions)
+            
+            # TD-errors
+            TDerrors = torch.clamp(self.TDErrors(targetQ, localQ.detach()).view(-1), -1, 1)
+            expected_TDerror_shape = (self.replay_batch_size,)
+            assert TDerrors.shape == expected_TDerror_shape,            "Error: shape of TDerrors is not same as expected. Expected shape: {}, got {}".format(expected_TDerror_shape, TDerrors.shape)
+            TDerrors = TDerrors.tolist()
+            
+            # update priorities according to the TDerrors
+            self.memory.update_priority(TDerrors, batch_idxs)
+            
+            # compute loss with importance sampling
+            priorities_sum = self.memory.priority_tree.get_value(0)
+            priorities = torch.from_numpy(priorities).float().to(device)
+            assert priorities.shape == (self.replay_batch_size, ),             "Error: shape of priorities is not same as expected. Expected shape: {}, got {}".format((batch_size,), priorities.shape)
+            
+            replay_probs = priorities/priorities_sum
+            imp_sampling_weights = (self.buffer_size*replay_probs)**(-self.beta0)
+            max_weight = torch.max(imp_sampling_weights)
+            imp_sampling_weights = imp_sampling_weights/max_weight
+            losses = self.criterion(targetQ, localQ).view(-1)
+            losses = imp_sampling_weights*losses
+            assert losses.shape == (self.replay_batch_size, ),             "Error: shape of losses is not same as expected. Expected shape: {}, got {}".format((batch_size,), losses.shape)
+            
+            self.optimizer[idx].zero_grad()
+            loss = losses.mean()
+            loss.backward()
+            self.optimizer[idx].step()
             
         
+        # now apply soft-updates to the target network
+        self.soft_updates()
+            
+        return 
+    
+    
+    def soft_updates(self):
         
-        return in_states, actions0, rewards, fin_states, dones, batch_idxs, priorities
-
+        with torch.no_grad():
+            for idx in range(self.num_agents):
+                for target_params, local_params in zip(self.target_net[idx].parameters(), 
+                                                   self.local_net[idx].parameters()):
+                    updates = self.tau*local_params.data + (1.0-self.tau)*target_params.data
+                    target_params.data.copy_(updates)
+    
