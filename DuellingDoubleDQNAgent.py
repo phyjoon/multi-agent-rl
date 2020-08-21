@@ -173,33 +173,39 @@ class DuellingDoubleDQNAgent():
         # for a roll_out of n-steps, the batch has shape: (self.replay_batch_size, roll_out, 5)
         # The last dimension corresponds to shape of the tuple (state, action, all_rewards, next_state, done) for each step
         
-        in_states = np.stack(batch[:,0,0])
+        #in_states = np.stack(batch[:,0,0])
+        in_states = torch.stack(list(map(lambda mem: torch.from_numpy(mem[0][0]), batch))).float().to(device)
         expected_in_shape = (self.replay_batch_size, self.in_channels, self.im_height, self.im_width)
-        assert in_states.shape == expected_in_shape ,        "Error: shape of in_states is not same as expected. Expected shape: {}, got {}".format(expected_in_shape, in_states.shape)
-        in_states = torch.from_numpy(in_states).float().to(device)
+        assert in_states.shape == expected_in_shape ,        "Error: shape of in_states is not same as expected. Expected shape: {}, got {}".format(expected_in_shape, tuple(in_states.shape))
+        #in_states = torch.from_numpy(in_states).float().to(device)
         
-        actions0 = np.stack(batch[:,0,1])
+        #actions0 = np.stack(batch[:,0,1])
+        actions0 = torch.stack(list(map(lambda mem: torch.from_numpy(mem[0][1]), batch))).to(device)
         expected_actions_shape = (self.replay_batch_size, self.num_agents)
-        assert actions0.shape == expected_actions_shape,         "Error: shape of actions0 not same as expected. Expected shape: {}, got {}".format(expected_actions_shape, actions0.shape)
-        actions0 = torch.from_numpy(actions0).to(device)
+        assert actions0.shape == expected_actions_shape,         "Error: shape of actions0 not same as expected. Expected shape: {}, got {}".format(expected_actions_shape, tuple(actions0.shape))
+        #actions0 = torch.from_numpy(actions0).to(device)
         
-        rewards = np.array(batch[:,:,2].tolist()) # rewards for all the steps in the roll_out for all the agents
+        # rewards for all the steps in the roll_out for all the agents
+        #rewards = np.array(batch[:,:,2].tolist()) 
+        rewards = torch.tensor(list(map(lambda mem: list(map(lambda tup: tup[2], mem)), batch))).float().to(device)
         expected_rewards_shape = (self.replay_batch_size, self.roll_out, self.num_agents)
-        assert rewards.shape == expected_rewards_shape,         "Error: shape of rewards not same as expected. Expected shape: {}, got {}".format(expected_rewards_shape, rewards.shape)
-        rewards = torch.from_numpy(rewards).float().to(device)
+        assert rewards.shape == expected_rewards_shape,         "Error: shape of rewards not same as expected. Expected shape: {}, got {}".format(expected_rewards_shape, tuple(rewards.shape))
+        #rewards = torch.from_numpy(rewards).float().to(device)
         
-        fin_states = np.stack(batch[:,-1,3])
+        #fin_states = np.stack(batch[:,-1,3])
+        fin_states = torch.stack(list(map(lambda mem: torch.from_numpy(mem[-1][3]), batch))).float().to(device)
         expected_fin_shape = (self.replay_batch_size, self.in_channels, self.im_height, self.im_width)
-        assert in_states.shape == expected_in_shape ,        "Error: shape of in_states is not same as expected. Expected shape: {}, got {}".format(expected_in_shape, in_states.shape)
-        fin_states = torch.from_numpy(fin_states).float().to(device)
+        assert fin_states.shape == expected_fin_shape ,        "Error: shape of fin_states is not same as expected. Expected shape: {}, got {}".format(expected_fin_shape, tuple(fin_states.shape))
+        #fin_states = torch.from_numpy(fin_states).float().to(device)
         
-        
+        # each agent's done for the last step of the roll_out
         #dones = np.stack(batch[:,:,4].tolist())
         #expected_dones_shape = (self.replay_batch_size, self.roll_out, self.num_agents)
-        dones = np.stack(batch[:,-1,4].tolist()) # each agent's done for the last step of the roll_out
+        #dones = np.stack(batch[:,-1,4].tolist()) 
+        dones = torch.tensor(list(map(lambda mem: mem[-1][4], batch))).float().to(device)
         expected_dones_shape = (self.replay_batch_size, self.num_agents)
-        assert dones.shape == expected_dones_shape,         "Error: shape of dones not same as expected. Expected shape: {}, got {}".format(expected_dones_shape, dones.shape)
-        dones = torch.from_numpy(dones).float().to(device)
+        assert dones.shape == expected_dones_shape,         "Error: shape of dones not same as expected. Expected shape: {}, got {}".format(expected_dones_shape, tuple(dones.shape))
+        #dones = torch.from_numpy(dones).float().to(device)
         
         # compute the accumalated discounted reward over the roll_out period
         discounted_rewards = torch.matmul(self.discounts, rewards)
@@ -224,26 +230,29 @@ class DuellingDoubleDQNAgent():
             agent_actions = actions0[:, idx].view(-1,1)
             localQ = self.local_net[idx](in_states).gather(1, agent_actions)
             
-            # TD-errors
-            TDerrors = torch.clamp(self.TDErrors(targetQ, localQ.detach()).view(-1), -1, 1)
-            expected_TDerror_shape = (self.replay_batch_size,)
-            assert TDerrors.shape == expected_TDerror_shape,            "Error: shape of TDerrors is not same as expected. Expected shape: {}, got {}".format(expected_TDerror_shape, TDerrors.shape)
-            TDerrors = TDerrors.tolist()
+            with torch.no_grad():
+                # TD-errors
+                TDerrors = torch.clamp(self.TDErrors(targetQ.detach(), localQ.detach()).view(-1), -1, 1)
+                expected_TDerror_shape = (self.replay_batch_size,)
+                assert TDerrors.shape == expected_TDerror_shape,                "Error: shape of TDerrors is not same as expected. Expected shape: {}, got {}".format(expected_TDerror_shape, TDerrors.shape)
+                TDerrors = TDerrors.tolist()
+                
+                # update priorities according to the TDerrors
+                self.memory.update_priority(TDerrors, batch_idxs)
+                
+                # compute importance sampling weights
+                priorities_sum = self.memory.priority_tree.get_value(0)
+                priorities = torch.from_numpy(priorities).float().to(device)
+                assert priorities.shape == (self.replay_batch_size, ),                 "Error: shape of priorities is not same as expected. Expected shape: {}, got {}".format((batch_size,), priorities.shape)
+                
+                replay_probs = priorities/priorities_sum
+                imp_sampling_weights = torch.pow(self.buffer_size*replay_probs.detach(), -self.beta0)
+                max_weight = torch.max(imp_sampling_weights)
+                imp_sampling_weights = (imp_sampling_weights/max_weight).float().to(device)
             
-            # update priorities according to the TDerrors
-            self.memory.update_priority(TDerrors, batch_idxs)
-            
-            # compute loss with importance sampling
-            priorities_sum = self.memory.priority_tree.get_value(0)
-            priorities = torch.from_numpy(priorities).float().to(device)
-            assert priorities.shape == (self.replay_batch_size, ),             "Error: shape of priorities is not same as expected. Expected shape: {}, got {}".format((batch_size,), priorities.shape)
-            
-            replay_probs = priorities/priorities_sum
-            imp_sampling_weights = (self.buffer_size*replay_probs)**(-self.beta0)
-            max_weight = torch.max(imp_sampling_weights)
-            imp_sampling_weights = imp_sampling_weights/max_weight
             losses = self.criterion(targetQ, localQ).view(-1)
-            losses = imp_sampling_weights*losses
+            assert imp_sampling_weights.shape == losses.shape,            "Error: imp_sampling_weights and losses don't have the same shape"
+            losses = imp_sampling_weights.detach()*losses
             assert losses.shape == (self.replay_batch_size, ),             "Error: shape of losses is not same as expected. Expected shape: {}, got {}".format((batch_size,), losses.shape)
             
             self.optimizer[idx].zero_grad()

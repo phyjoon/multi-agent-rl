@@ -21,7 +21,7 @@ def NormalizedConvLayer(in_channels, out_channels, kernel_size, padding = 0, str
 
 
 class DuellingDQN(nn.Module):
-    def __init__(self, in_channels, conv_dim = 32, kernel_size = 6, num_outputs = 5):
+    def __init__(self, in_channels, conv_dim = 32, kernel_size = 3, num_outputs = 5):
         
         super().__init__()
         
@@ -30,15 +30,15 @@ class DuellingDQN(nn.Module):
         self.kernel_size = kernel_size
         self.num_outputs = num_outputs
         
-        # input is an image a 464 x 464 image
+        # input is an image a 116 x 116 image
         
-        self.conv1 = NormalizedConvLayer(in_channels, conv_dim, kernel_size, stride = 4, padding = 1)
-        # default output shape = 32 x 116 x 116   
+        self.conv1 = NormalizedConvLayer(in_channels, conv_dim, kernel_size, stride = 2, padding = 1)
+        # default output shape = 32 x 57 x 57  
         
-        self.conv2 = NormalizedConvLayer(conv_dim, 2*conv_dim, kernel_size, stride = 4, padding = 1)
-        # default output shape = 64 x 29 x 29 
+        self.conv2 = NormalizedConvLayer(conv_dim, 2*conv_dim, kernel_size, stride = 2, padding = 1)
+        # default output shape = 64 x 27 x 27 
         
-        self.conv3 = NormalizedConvLayer(2*conv_dim, 4*conv_dim, kernel_size, stride = 4, padding = 1)
+        self.conv3 = NormalizedConvLayer(2*conv_dim, 4*conv_dim, kernel_size = 4, stride = 4, padding = 1)
         # default output shape = 128  x 7 x 7 
         
         self.conv4 = NormalizedConvLayer(4*conv_dim, 8*conv_dim, kernel_size = 4, stride = 2, padding = 1)
@@ -58,17 +58,17 @@ class DuellingDQN(nn.Module):
         
     def forward(self, x):
         batch_size = x.shape[0]
-        # print(x.shape)
+        #print(x.shape)
         x = F.selu(self.conv1(x))
-        # print(x.shape)
+        #print(x.shape)
         x = F.selu(self.conv2(x))
-        # print(x.shape)
+        #print(x.shape)
         x = F.selu(self.conv3(x))
-        # print(x.shape)
+        #print(x.shape)
         x = F.selu(self.conv4(x))
-        # print(x.shape)
+        #print(x.shape)
         x = F.selu(self.conv5(x))
-        # print(x.shape)
+        #print(x.shape)
         
         assert x.shape == (batch_size, 16*self.conv_dim, 1, 1), \
         "Wrong shape of conv5 output. Expected {}, got {}".format((batch_size, 16*self.conv_dim, 1, 1), x.size())
