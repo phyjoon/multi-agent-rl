@@ -49,7 +49,7 @@ class DuellingDoubleDQNAgent():
     
     def __init__(self, device = device, num_agents=1, im_height = 464, im_width = 464, obs_in_channels=4, conv_dim = 32,  
                  kernel_size = 6, n_actions = 5, buffer_size = 2**20, roll_out = 5, replay_batch_size = 32,
-                 lr = 1e-4, epsilon = 0.3, epsilon_decay_rate = 0.999, tau = 1e-3, gamma = 1, update_interval = 4, 
+                 lr = 1e-5, epsilon = 0.3, epsilon_decay_rate = 0.9999, tau = 1e-3, gamma = 1, update_interval = 4, 
                  alpha = 0.6, beta0 = 0.4):
         super().__init__()
         self.device = device
@@ -96,7 +96,7 @@ class DuellingDoubleDQNAgent():
             self.target_net.append(target)
             
             # set the optimizer for the local network
-            optim = torch.optim.Adam(self.local_net[-1].parameters(), lr = lr)
+            optim = torch.optim.Adam(self.local_net[-1].parameters(), lr = lr, betas = (0.5, 0.9999))
             self.optimizer.append(optim)
         
         # loss function to compare the Q-value of the local and the target network
@@ -162,7 +162,7 @@ class DuellingDoubleDQNAgent():
         self.t_step = (self.t_step+1)%self.update_every
         if self.t_step == 0 and self.memory.__len__() > 2*self.replay_batch_size:
             self.learn()
-            self.epsilon = max(self.epsilon_decay_rate*self.epsilon, 0.1 )
+            self.epsilon = max(self.epsilon_decay_rate*self.epsilon, 0.01 )
             self.beta0 = min(self.beta0/self.epsilon_decay_rate, 1)
         
     
@@ -232,7 +232,7 @@ class DuellingDoubleDQNAgent():
             
             with torch.no_grad():
                 # TD-errors
-                TDerrors = torch.clamp(self.TDErrors(targetQ.detach(), localQ.detach()).view(-1), -1, 1)
+                TDerrors = torch.clamp(self.TDErrors(targetQ.detach(), localQ.detach()).view(-1), -5, 5)
                 expected_TDerror_shape = (self.replay_batch_size,)
                 assert TDerrors.shape == expected_TDerror_shape,                "Error: shape of TDerrors is not same as expected. Expected shape: {}, got {}".format(expected_TDerror_shape, TDerrors.shape)
                 TDerrors = TDerrors.tolist()
